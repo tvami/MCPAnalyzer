@@ -1,0 +1,13 @@
+# the usual stuff
+*.root
+*.pdf
+*.png
+*.log
+*.out
+*.err
+*.pyc
+*.pkl
+*.DS_Store
+*.vscode
+__pycache__/
+__pycache__/*
