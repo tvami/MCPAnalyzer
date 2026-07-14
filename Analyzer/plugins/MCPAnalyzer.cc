@@ -84,16 +84,20 @@ private:
   const int mcpPdgId_;
   const edm::EDGetTokenT<edm::TriggerResults> triggerResultsToken_;
 
-  std::vector<std::string> b_trigNames_;
-  std::vector<int> b_trigPass_;
+
   // per-track tree
   TTree* tT_ = nullptr;
   // per-gen-MCP tree
   TTree* tG_ = nullptr;
+  // per-event tree
+  TTree* tE_ = nullptr;
 
   // track-tree branches
   float b_pfMET_;
   float b_puppiMET_;
+  std::vector<std::string> b_trigNames_;
+  std::vector<int> b_trigPass_;
+  std::vector<int> b_passTrigger_OR; 
 
   unsigned int b_run_, b_lumi_; unsigned long long b_event_;
   double b_pt_, b_eta_, b_phi_, b_ptError_, b_normChi2_, b_validFrac_;
@@ -121,7 +125,13 @@ private:
   double g_pt_, g_eta_, g_phi_; int g_charge_, g_pdgId_;
   int g_matched_; double g_recoPt_, g_dR_, g_chargeFromCurv_;
 
-  std::vector<int> b_passTrigger_OR; 
+  //event-tree branches
+  unsigned int e_run_, e_lumi_; unsigned long long e_event_;
+  float e_pfMET_;
+  float e_puppiMET_;
+  std::vector<std::string> e_trigNames_;
+  std::vector<int> e_trigPass_;
+  int e_passTrigger_OR; 
 
 };
 
@@ -183,13 +193,23 @@ void MCPAnalyzer::beginJob() {
   
   tT_->Branch("pfMET", &b_pfMET_);
   tT_->Branch("puppiMET", &b_puppiMET_);
-  
   tT_->Branch("trigNames", &b_trigNames_);
   tT_->Branch("trigPass", &b_trigPass_);
   tT_->Branch("HLT_trigPass_OR", &b_passTrigger_OR);
   TBranch*br = tT_->GetBranch("HLT_trigPass_OR");
   br->SetTitle("OR_HLT_non-prescaled_triggers");
 
+
+  tE_ = fs->make<TTree>("events", "per event");
+  tE_->Branch("run", &e_run_); tE_->Branch("lumi", &e_lumi_); tE_->Branch("event", &e_event_);
+  tE_->Branch("pfMET", &e_pfMET_);
+  tE_->Branch("puppiMET", &e_puppiMET_);
+  tE_->Branch("trigNames", &e_trigNames_);
+  tE_->Branch("trigPass", &e_trigPass_);
+  tE_->Branch("HLT_trigPass_OR", &e_passTrigger_OR);
+  TBranch*br_e = tE_->GetBranch("HLT_trigPass_OR");
+  br_e->SetTitle("OR_HLT_non-prescaled_triggers");
+  
 
   tG_ = fs->make<TTree>("gen", "per gen MCP");
   tG_->Branch("run", &g_run_); tG_->Branch("lumi", &g_lumi_); tG_->Branch("event", &g_event_);
@@ -290,9 +310,16 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
     }
 
   b_passTrigger_OR.push_back(pass_OR); 
+
+  //filling event level tree outside of track loop
+  e_run_ = run; e_lumi_ = lumi; e_event_ = event;
+  e_pfMET_ = b_pfMET_;
+  e_puppiMET_ = b_puppiMET_;
+  e_trigNames_ = b_trigNames_;
+  e_trigPass_ = b_trigPass_;
+  e_passTrigger_OR = pass_OR;
+  tE_->Fill();
   
-
-
   // for gen-tree: track best reco match per MCP
   std::vector<double> mcpBestDR(mcps.size(), 1e9);
   std::vector<double> mcpBestRecoPt(mcps.size(), -1.);
