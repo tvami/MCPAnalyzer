@@ -148,7 +148,7 @@ MCPAnalyzer::MCPAnalyzer(const edm::ParameterSet& iC)
       pixelCPEName_(iC.getParameter<std::string>("pixelCPE")),
       cpeToken_(esConsumes<PixelClusterParameterEstimator, TkPixelCPERecord>(edm::ESInputTag("", pixelCPEName_))),
       mcpPdgId_(iC.getParameter<int>("mcpPdgId")),
-      triggerResultsToken_(consumes<edm::TriggerResults>(iC.getParameter<edm::InputTag>("TriggerResults"))) {
+      triggerResultsToken_(consumes<edm::TriggerResults>(iC.getParameter<edm::InputTag>("triggerResults"))) {
   usesResource("TFileService");
 }
 
