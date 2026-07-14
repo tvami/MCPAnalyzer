@@ -42,7 +42,7 @@ process.MCPAnalyzer = cms.EDAnalyzer(
     primaryVertices=cms.InputTag("offlineSlimmedPrimaryVertices"),
     pixelCPE=cms.string(options.pixelCPE),
     mcpPdgId=cms.int32(10000200),
-    TriggerResults=cms.InputTag("TriggerResults", "", "HLT"),
+    triggerResults=cms.InputTag("TriggerResults", "", "HLT"),
 )
 
 process.TFileService = cms.Service("TFileService", fileName=cms.string(options.outputFile))
