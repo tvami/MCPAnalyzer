@@ -14,6 +14,9 @@
 #include <memory>
 #include <vector>
 #include <cmath>
+#include <fstream>
+#include <set>
+#include <map>
 
 #include "FWCore/Framework/interface/Frameworkfwd.h"
 #include "FWCore/Framework/interface/one/EDAnalyzer.h"
@@ -29,6 +32,7 @@
 #include "DataFormats/Math/interface/deltaR.h"
 #include "DataFormats/PatCandidates/interface/IsolatedTrack.h"
 #include "DataFormats/PatCandidates/interface/PackedCandidate.h"
+#include "DataFormats/PatCandidates/interface/MET.h"
 #include "DataFormats/TrackReco/interface/Track.h"
 #include "DataFormats/TrackReco/interface/HitPattern.h"
 #include "DataFormats/TrackReco/interface/DeDxHitInfo.h"
@@ -46,6 +50,14 @@
 
 #include "MCPProbQ.h"
 
+
+//my own includes for the triggers: --took this from the earth as dm
+#include "DataFormats/Common/interface/TriggerResults.h"
+#include "FWCore/Common/interface/TriggerNames.h"
+#include "FWCore/Common/interface/TriggerResultsByName.h"
+
+
+
 class MCPAnalyzer : public edm::one::EDAnalyzer<edm::one::SharedResources> {
 public:
   explicit MCPAnalyzer(const edm::ParameterSet&);
@@ -54,9 +66,15 @@ public:
 
 private:
   void beginJob() override;
+  void endJob() override;
   void analyze(const edm::Event&, const edm::EventSetup&) override;
 
   // tokens
+  //pfmet token: 
+  const edm::EDGetTokenT<pat::METCollection> metToken_;
+  const edm::EDGetTokenT<pat::METCollection> puppiMetToken_;
+
+
   const edm::EDGetTokenT<std::vector<pat::IsolatedTrack>> trackToken_;
   const edm::EDGetTokenT<reco::DeDxHitInfoAss> dedxToken_;
   const edm::EDGetTokenT<std::vector<reco::GenParticle>> prunedGenToken_;
@@ -67,12 +85,20 @@ private:
   const edm::ESGetToken<PixelClusterParameterEstimator, TkPixelCPERecord> cpeToken_;
   const int mcpPdgId_;
 
+  //mine
+  const edm::EDGetTokenT<edm::TriggerResults> triggerResultsToken_;
+
+  std::vector<std::string> b_trigNames_;
+  std::vector<int> b_trigPass_;
   // per-track tree
   TTree* tT_ = nullptr;
   // per-gen-MCP tree
   TTree* tG_ = nullptr;
 
   // track-tree branches
+  float b_pfMET_;
+  float b_puppiMET_;
+
   unsigned int b_run_, b_lumi_; unsigned long long b_event_;
   double b_pt_, b_eta_, b_phi_, b_ptError_, b_normChi2_, b_validFrac_;
   int b_charge_, b_nPixHit_, b_nTkLayers_, b_highPurity_;
@@ -99,10 +125,25 @@ private:
   double g_pt_, g_eta_, g_phi_; int g_charge_, g_pdgId_;
   int g_matched_; double g_recoPt_, g_dR_, g_chargeFromCurv_;
 
+  //trigger bools
+  std::vector<int> b_passTrigger_OR;  
+  long long nPass_MET105 = 0;
+  long long nTotal_MET105 = 0; 
+  // std::string passTrigger_ORtitle = (
+  //     "#splitline{HLT_PFMET120_PFMHT120_IDTight_v}"
+  //     "{#splitline{PFHT500_PFMET100_PFMHT100_IDTight_v}"
+  //     "{#splitline{PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60_v}"
+  //     "{MET105_IsoTrk50_v}}}"
+  // );
+  std::string passTrigger_ORtitle = "Unscaled Triggers";
+
 };
 
 MCPAnalyzer::MCPAnalyzer(const edm::ParameterSet& iC)
-    : trackToken_(consumes<std::vector<pat::IsolatedTrack>>(iC.getParameter<edm::InputTag>("isolatedTracks"))),
+    : metToken_(consumes<pat::METCollection>(iC.getParameter<edm::InputTag>("slimmedMET"))),
+      puppiMetToken_(consumes<pat::METCollection>(iC.getParameter<edm::InputTag>("slimmedPuppiMET"))),
+
+      trackToken_(consumes<std::vector<pat::IsolatedTrack>>(iC.getParameter<edm::InputTag>("isolatedTracks"))),
       dedxToken_(consumes<reco::DeDxHitInfoAss>(iC.getParameter<edm::InputTag>("dedxHitInfo"))),
       prunedGenToken_(consumes<std::vector<reco::GenParticle>>(iC.getParameter<edm::InputTag>("prunedGenParticles"))),
       vertexToken_(consumes<std::vector<reco::Vertex>>(iC.getParameter<edm::InputTag>("primaryVertices"))),
@@ -110,13 +151,18 @@ MCPAnalyzer::MCPAnalyzer(const edm::ParameterSet& iC)
       geomToken_(esConsumes<TrackerGeometry, TrackerDigiGeometryRecord>()),
       pixelCPEName_(iC.getParameter<std::string>("pixelCPE")),
       cpeToken_(esConsumes<PixelClusterParameterEstimator, TkPixelCPERecord>(edm::ESInputTag("", pixelCPEName_))),
-      mcpPdgId_(iC.getParameter<int>("mcpPdgId")) {
+      mcpPdgId_(iC.getParameter<int>("mcpPdgId")),
+      triggerResultsToken_(consumes<edm::TriggerResults>(iC.getParameter<edm::InputTag>("TriggerResults"))) {
+      // triggerListOut_(iC.getParameter<std::string>("triggerListOut")) {
+      //triggerResultsToken_(consumes<edm::TriggerResults>(iC.getParameter<edm::InputTag>("TriggerResults"))) {
   usesResource("TFileService");
 }
 
+
+//need to add the trigger branches 
 void MCPAnalyzer::beginJob() {
   edm::Service<TFileService> fs;
-
+  std::cout << "MCPAnalyzer new build loaded\n";
   tT_ = fs->make<TTree>("tracks", "per isolated-track");
   tT_->Branch("run", &b_run_);            tT_->Branch("lumi", &b_lumi_);   tT_->Branch("event", &b_event_);
   tT_->Branch("pt", &b_pt_);              tT_->Branch("eta", &b_eta_);     tT_->Branch("phi", &b_phi_);
@@ -151,6 +197,20 @@ void MCPAnalyzer::beginJob() {
   tT_->Branch("genMatched", &b_genMatched_); tT_->Branch("gen_pt", &b_genPt_); tT_->Branch("gen_eta", &b_genEta_);
   tT_->Branch("gen_charge", &b_genCharge_); tT_->Branch("gen_pdgId", &b_genPdgId_); tT_->Branch("dR", &b_dR_);
   tT_->Branch("chargeFromCurvature", &b_chargeFromCurv_);
+  
+  tT_->Branch("pfMET", &b_pfMET_);
+  tT_->Branch("puppiMET", &b_puppiMET_);
+  
+  tT_->Branch("trigNames", &b_trigNames_);
+  tT_->Branch("trigPass", &b_trigPass_);
+  tT_->Branch("HLT_trigPass_OR", &b_passTrigger_OR);
+  TBranch*br = tT_->GetBranch("HLT_trigPass_OR");
+  br->SetTitle(passTrigger_ORtitle.c_str());
+  // tT_->Branch(passTrigger_ORtitle*,
+  //   &b_passTrigger_OR);
+  // tT_->SetAlias("HLT_trigPass_OR", passTrigger_ORtitle*);
+
+
 
   tG_ = fs->make<TTree>("gen", "per gen MCP");
   tG_->Branch("run", &g_run_); tG_->Branch("lumi", &g_lumi_); tG_->Branch("event", &g_event_);
@@ -158,6 +218,12 @@ void MCPAnalyzer::beginJob() {
   tG_->Branch("gen_charge", &g_charge_); tG_->Branch("gen_pdgId", &g_pdgId_);
   tG_->Branch("matched", &g_matched_); tG_->Branch("reco_pt", &g_recoPt_); tG_->Branch("dR", &g_dR_);
   tG_->Branch("chargeFromCurvature", &g_chargeFromCurv_);
+  tG_->Branch("trigNames", &b_trigNames_);
+  tG_->Branch("trigPass", &b_trigPass_);
+  tG_->Branch("HLT_trigPass_OR", &b_passTrigger_OR);
+  TBranch*br = tG_->GetBranch("HLT_trigPass_OR");
+  br->SetTitle(passTrigger_ORtitle.c_str());
+  
 
 
 }
@@ -182,6 +248,142 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
       if (std::abs(g.pdgId()) == mcpPdgId_ && g.status() == 1) mcps.push_back(&g);
     }
   }
+
+  edm::Handle<pat::METCollection> pfMETCollection;
+  iEvent.getByToken(metToken_, pfMETCollection);
+  if (!pfMETCollection.isValid()) {
+    edm::LogError("DQMClientExample") << "invalid collection: MET"
+                                      << "\n";
+    return;
+  }
+  edm::Handle<pat::METCollection> puppiMETCollection;
+  iEvent.getByToken(puppiMetToken_, puppiMETCollection);
+  if (!puppiMETCollection.isValid()) {
+    edm::LogError("DQMClientExample") << "invalid collection: puppiMET"
+                                      << "\n";
+    return;
+  }
+  b_pfMET_ = pfMETCollection->front().pt();
+  b_puppiMET_ = puppiMETCollection->front().pt();
+
+  //printing trigger names 
+  // const edm::Handle<edm::TriggerResults> triggerH = iEvent.getHandle(triggerResultsToken_);
+  // const auto triggerNames = iEvent.triggerNames(*triggerH);
+  // if (triggerH.isValid()){
+  //   static bool printedOnce = false;
+  //   if (!printedOnce) {
+  //   for (unsigned int i = 0; i < triggerH->size(); ++i) {
+  //     std::cout << triggerNames.triggerName(i) << " : " << (triggerH->accept(i) ? "PASS" : "fail") << std::endl;
+  //     }
+  //     printedOnce = true;
+  //   }
+  // } else {
+  //   std::cout << "TriggerResults handle is NOT valid!" << std::endl;
+  //   }
+  // if (triggerH.isValid()) {
+  //   const auto& triggerNames = iEvent.triggerNames(*triggerH);
+  //   for (unsigned int i = 0; i < triggerH->size(); ++i) {
+  //     if (triggerH->accept(i)) {
+  //       discoveredTriggers_.insert(triggerNames.triggerName(i));
+  //     }
+  //   }
+  // }
+  b_trigNames_.clear();
+  b_trigPass_.clear();
+  b_passTrigger_OR.clear(); 
+
+  const auto triggerH = iEvent.getHandle(triggerResultsToken_);
+  if (triggerH.isValid()) {
+    const auto& triggerNames = iEvent.triggerNames(*triggerH);
+    for (unsigned int i = 0; i < triggerH->size(); ++i) {
+      TString name(triggerNames.triggerName(i)); 
+      b_trigNames_.push_back(triggerNames.triggerName(i));
+      b_trigPass_.push_back(triggerH->accept(i) ? 1 : 0);
+      if (name.Contains("MET105_IsoTrk50_v12")) {
+        nTotal_MET105++;
+        if (triggerH->accept(i)) nPass_MET105++;
+      }
+    }
+  }
+
+
+    int pass_OR = 0;
+    
+    // std::vector<std::string> OR_trigger_list = {
+    // "HLT_PFMET120_PFMHT120_IDTight", 
+    // "HLT_PFHT500_PFMET100_PFMHT100_IDTight",
+    // "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60",
+    // "HLT_MET105_IsoTrk50"
+    // };
+        std::vector<std::string> OR_trigger_list = {
+    "HLT_DoubleMediumDeepTauPFTauHPS30_L2NN_eta2p1_OneProng",
+    "HLT_DoubleMediumDeepTauPFTauHPS35_L2NN_eta2p1",
+    "HLT_DoublePNetTauhPFJet30_Medium_L2NN_eta2p3",
+    "HLT_DoublePNetTauhPFJet30_Tight_L2NN_eta2p3",
+    "HLT_MET105_IsoTrk50",
+    "HLT_MET120_IsoTrk50",
+    "HLT_PFMET105_IsoTrk50",
+    "HLT_PFMET120_PFMHT120_IDTight",
+    "HLT_PFMET120_PFMHT120_IDTight_PFHT60",
+    "HLT_PFMET130_PFMHT130_IDTight",
+    "HLT_PFMET140_PFMHT140_IDTight",
+    "HLT_PFMET200_BeamHaloCleaned",
+    "HLT_PFMET250_NotCleaned",
+    "HLT_PFMETNoMu110_PFMHTNoMu110_IDTight_FilterHF",
+    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight",
+    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_FilterHF",
+    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60",
+    "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight",
+    "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight_FilterHF",
+    "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight",
+    "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight_FilterHF",
+    "HLT_PFMETTypeOne140_PFMHT140_IDTight",
+    "HLT_PFMETTypeOne200_BeamHaloCleaned"
+  };
+
+
+
+    for (unsigned int i = 0; i< b_trigNames_.size(); ++i){
+      for (const auto& trigger : OR_trigger_list){
+        if (b_trigNames_[i].find(trigger) != std::string::npos && b_trigPass_[i] == 1){
+          pass_OR = 1;
+        }
+      }
+    }
+
+  b_passTrigger_OR.push_back(pass_OR); 
+  // b_trig_PFMET120_PFMHT120_    = false;
+  // b_trig_MET105_IsoTrk50_      = false;
+  // b_trig_Mu12eta2p3_           = false;
+  // b_trig_Photon300_NoHE_       = false;
+  // b_trig_PFHT500_PFMET100_     = false;b
+  // b_trig_BTagMu_AK4Jet300_Mu5_ = false;
+
+  // if (triggerH.isValid()) {
+  //   for (unsigned int i = 0; i < triggerH->size(); ++i) {
+  //     if (!triggerH->accept(i)) continue;
+  //     TString name(triggerNames.triggerName(i));
+  //     if (name.Contains("HLT_PFMET120_PFMHT120_IDTight_v"))          b_trig_PFMET120_PFMHT120_    = true;
+  //     if (name.Contains("HLT_MET105_IsoTrk50_v"))                    b_trig_MET105_IsoTrk50_      = true;
+  //     if (name.Contains("HLT_Mu12eta2p3_v"))                         b_trig_Mu12eta2p3_           = true;
+  //     if (name.Contains("HLT_Photon300_NoHE_v"))                     b_trig_Photon300_NoHE_       = true;
+  //     if (name.Contains("HLT_PFHT500_PFMET100_PFMHT100_IDTight_v"))  b_trig_PFHT500_PFMET100_     = true;
+  //     if (name.Contains("HLT_BTagMu_AK4Jet300_Mu5_v"))              b_trig_BTagMu_AK4Jet300_Mu5_ = true;
+  //   }
+  // }
+
+  // b_passTrigger_ = b_trig_PFMET120_PFMHT120_ || b_trig_MET105_IsoTrk50_ || 
+  //                 b_trig_Mu12eta2p3_|| b_trig_Photon300_NoHE_  ||
+  //                 b_trig_PFHT500_PFMET100_   || b_trig_BTagMu_AK4Jet300_Mu5_;
+
+
+  // std::vector<std::string> trigNames_;
+  // std::vector<UChar_t> trigPass_;
+
+
+
+
+
 
   // for gen-tree: track best reco match per MCP
   std::vector<double> mcpBestDR(mcps.size(), 1e9);
@@ -280,18 +482,27 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
     g_recoPt_ = mcpBestRecoPt[m];
     g_dR_ = (mcpBestDR[m] < 1e9) ? mcpBestDR[m] : -1.;
     g_chargeFromCurv_ = (g_matched_ && g_recoPt_ > 0) ? g_pt_ / g_recoPt_ : -1.;
+    g_passTrigOR_ = pass_OR;
     tG_->Fill();
   }
 }
+void MCPAnalyzer::endJob(){ 
+  std::cout << " | running total: pass=" << nPass_MET105
+                  << " total=" << nTotal_MET105
+                  << "efficiency"<< double(nPass_MET105)/nTotal_MET105
+                  << std::endl;}
 
 void MCPAnalyzer::fillDescriptions(edm::ConfigurationDescriptions& descriptions) {
   edm::ParameterSetDescription desc;
+  desc.add<edm::InputTag>("slimmedMET", edm::InputTag("slimmedMETs"));
+  desc.add<edm::InputTag>("slimmedPuppiMET", edm::InputTag("slimmedMETsPuppi"));
   desc.add<edm::InputTag>("isolatedTracks", edm::InputTag("isolatedTracks"));
   desc.add<edm::InputTag>("dedxHitInfo", edm::InputTag("isolatedTracks"));
   desc.add<edm::InputTag>("prunedGenParticles", edm::InputTag("prunedGenParticles"));
   desc.add<edm::InputTag>("primaryVertices", edm::InputTag("offlineSlimmedPrimaryVertices"));
   desc.add<std::string>("pixelCPE", "PixelCPETemplateReco");
   desc.add<int>("mcpPdgId", 10000200);
+  desc.add<edm::InputTag>("TriggerResults", edm::InputTag("TriggerResults", "", "HLT"));
   descriptions.add("MCPAnalyzer", desc);
 }
 

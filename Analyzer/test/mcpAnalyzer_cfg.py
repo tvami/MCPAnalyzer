@@ -34,12 +34,15 @@ process.options = cms.untracked.PSet(wantSummary=cms.untracked.bool(False))
 
 process.MCPAnalyzer = cms.EDAnalyzer(
     "MCPAnalyzer",
-    isolatedTracks=cms.InputTag("isolatedTracks"),
+    slimmedMET = cms.InputTag("slimmedMETs"),
+    slimmedPuppiMET = cms.InputTag("slimmedMETsPuppi"),
+    isolatedTracks = cms.InputTag("isolatedTracks"),
     dedxHitInfo=cms.InputTag("isolatedTracks"),
     prunedGenParticles=cms.InputTag("prunedGenParticles"),
     primaryVertices=cms.InputTag("offlineSlimmedPrimaryVertices"),
     pixelCPE=cms.string(options.pixelCPE),
     mcpPdgId=cms.int32(10000200),
+    TriggerResults=cms.InputTag("TriggerResults", "", "HLT"),
 )
 
 process.TFileService = cms.Service("TFileService", fileName=cms.string(options.outputFile))
