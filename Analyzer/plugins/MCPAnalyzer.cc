@@ -17,6 +17,7 @@
 #include <fstream>
 #include <set>
 #include <map>
+#include <algorithm>
 
 #include "FWCore/Framework/interface/Frameworkfwd.h"
 #include "FWCore/Framework/interface/one/EDAnalyzer.h"
@@ -33,6 +34,8 @@
 #include "DataFormats/PatCandidates/interface/IsolatedTrack.h"
 #include "DataFormats/PatCandidates/interface/PackedCandidate.h"
 #include "DataFormats/PatCandidates/interface/MET.h"
+#include "DataFormats/PatCandidates/interface/Muon.h"
+#include "DataFormats/PatCandidates/interface/TriggerObjectStandAlone.h"
 #include "DataFormats/TrackReco/interface/Track.h"
 #include "DataFormats/TrackReco/interface/HitPattern.h"
 #include "DataFormats/TrackReco/interface/DeDxHitInfo.h"
@@ -83,6 +86,14 @@ private:
   const edm::ESGetToken<PixelClusterParameterEstimator, TkPixelCPERecord> cpeToken_;
   const int mcpPdgId_;
   const edm::EDGetTokenT<edm::TriggerResults> triggerResultsToken_;
+  const edm::EDGetTokenT<std::vector<pat::Muon>> muonToken_;
+  const edm::EDGetTokenT<pat::TriggerObjectStandAloneCollection> trigObjToken_;
+  const bool saveTrigNames_;
+  const bool tpOnly_;
+
+  // HLT groups, matched as "<name>_v" prefixes
+  static const std::vector<std::string> kTrigOR_, kTrigMET_, kTrigJet_, kTrigTau_, kTrigMuon_;
+  static bool passAny(const edm::TriggerResults&, const edm::TriggerNames&, const std::vector<std::string>&);
 
 
   // per-track tree
@@ -97,7 +108,12 @@ private:
   float b_puppiMET_;
   std::vector<std::string> b_trigNames_;
   std::vector<int> b_trigPass_;
-  std::vector<int> b_passTrigger_OR; 
+  int b_passTrigger_OR;
+  int b_passMET_, b_passJet_, b_passTau_, b_passMuon_;
+  int b_nPV_;
+  // muon tag-and-probe
+  int b_muMatched_, b_muTight_, b_muIsTag_; float b_muRelIso_, b_muPt_;
+  float b_tpMass_, b_tpTagPt_; int b_tpOS_;
 
   unsigned int b_run_, b_lumi_; unsigned long long b_event_;
   double b_pt_, b_eta_, b_phi_, b_ptError_, b_normChi2_, b_validFrac_;
@@ -108,6 +124,7 @@ private:
   float b_probQpixel_, b_probQpixelNoL1_, b_probXYpixel_;
   std::vector<float> b_pixelDedxHits_, b_stripDedxHits_;
   int b_nPixUsed_, b_nonL1Pix_;
+  int b_nPixQFloor_;
   int b_nPixClusters_, b_nPixNoFillProb_, b_nPixSpecInCPE_, b_nPixXYpinnedLo_, b_nPixXYpinnedHi_, b_nPixXYvalid_;
   float b_pixXYrawMin_;
   float b_ihFull_, b_ihPixel_, b_ihStrip_;
@@ -124,6 +141,7 @@ private:
   unsigned int g_run_, g_lumi_; unsigned long long g_event_;
   double g_pt_, g_eta_, g_phi_; int g_charge_, g_pdgId_;
   int g_matched_; double g_recoPt_, g_dR_, g_chargeFromCurv_;
+  int g_hasDeDx_; float g_probQpixel_, g_sizeXresidual_;  // of the best-matched track
 
   //event-tree branches
   unsigned int e_run_, e_lumi_; unsigned long long e_event_;
@@ -131,7 +149,9 @@ private:
   float e_puppiMET_;
   std::vector<std::string> e_trigNames_;
   std::vector<int> e_trigPass_;
-  int e_passTrigger_OR; 
+  int e_passTrigger_OR;
+  int e_passMET_, e_passJet_, e_passTau_, e_passMuon_;
+  int e_nPV_, e_nTag_;
 
 };
 
@@ -148,8 +168,51 @@ MCPAnalyzer::MCPAnalyzer(const edm::ParameterSet& iC)
       pixelCPEName_(iC.getParameter<std::string>("pixelCPE")),
       cpeToken_(esConsumes<PixelClusterParameterEstimator, TkPixelCPERecord>(edm::ESInputTag("", pixelCPEName_))),
       mcpPdgId_(iC.getParameter<int>("mcpPdgId")),
-      triggerResultsToken_(consumes<edm::TriggerResults>(iC.getParameter<edm::InputTag>("triggerResults"))) {
+      triggerResultsToken_(consumes<edm::TriggerResults>(iC.getParameter<edm::InputTag>("triggerResults"))),
+      muonToken_(consumes<std::vector<pat::Muon>>(iC.getParameter<edm::InputTag>("muons"))),
+      trigObjToken_(consumes<pat::TriggerObjectStandAloneCollection>(iC.getParameter<edm::InputTag>("triggerObjects"))),
+      saveTrigNames_(iC.getParameter<bool>("saveTrigNames")),
+      tpOnly_(iC.getParameter<bool>("tpOnly")) {
   usesResource("TFileService");
+}
+
+// old OR list (MET + ditau), kept for continuity
+const std::vector<std::string> MCPAnalyzer::kTrigOR_ = {
+    "HLT_DoubleMediumDeepTauPFTauHPS30_L2NN_eta2p1_OneProng", "HLT_DoubleMediumDeepTauPFTauHPS35_L2NN_eta2p1",
+    "HLT_DoublePNetTauhPFJet30_Medium_L2NN_eta2p3", "HLT_DoublePNetTauhPFJet30_Tight_L2NN_eta2p3",
+    "HLT_MET105_IsoTrk50", "HLT_MET120_IsoTrk50", "HLT_PFMET105_IsoTrk50",
+    "HLT_PFMET120_PFMHT120_IDTight", "HLT_PFMET120_PFMHT120_IDTight_PFHT60", "HLT_PFMET130_PFMHT130_IDTight",
+    "HLT_PFMET140_PFMHT140_IDTight", "HLT_PFMET200_BeamHaloCleaned", "HLT_PFMET250_NotCleaned",
+    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight",  // NoMu110_FilterHF dropped: disabled from 2024F
+    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_FilterHF", "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60",
+    "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight", "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight_FilterHF",
+    "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight", "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight_FilterHF",
+    "HLT_PFMETTypeOne140_PFMHT140_IDTight", "HLT_PFMETTypeOne200_BeamHaloCleaned"};
+const std::vector<std::string> MCPAnalyzer::kTrigMET_ = {
+    "HLT_MET105_IsoTrk50", "HLT_MET120_IsoTrk50", "HLT_PFMET105_IsoTrk50",
+    "HLT_PFMET120_PFMHT120_IDTight", "HLT_PFMET120_PFMHT120_IDTight_PFHT60", "HLT_PFMET130_PFMHT130_IDTight",
+    "HLT_PFMET140_PFMHT140_IDTight", "HLT_PFMET200_BeamHaloCleaned", "HLT_PFMET250_NotCleaned",
+    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight",  // NoMu110_FilterHF dropped: disabled from 2024F
+    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_FilterHF", "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60",
+    "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight", "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight_FilterHF",
+    "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight", "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight_FilterHF",
+    "HLT_PFMETTypeOne140_PFMHT140_IDTight", "HLT_PFMETTypeOne200_BeamHaloCleaned", "HLT_CaloMET350_NotCleaned"};
+const std::vector<std::string> MCPAnalyzer::kTrigJet_ = {
+    "HLT_PFJet500", "HLT_AK8PFJet500", "HLT_PFHT1050", "HLT_CaloJet500_NoJetID"};
+const std::vector<std::string> MCPAnalyzer::kTrigTau_ = {
+    "HLT_DoubleMediumDeepTauPFTauHPS30_L2NN_eta2p1_OneProng", "HLT_DoubleMediumDeepTauPFTauHPS35_L2NN_eta2p1",
+    "HLT_DoublePNetTauhPFJet30_Medium_L2NN_eta2p3", "HLT_DoublePNetTauhPFJet30_Tight_L2NN_eta2p3"};
+const std::vector<std::string> MCPAnalyzer::kTrigMuon_ = {"HLT_IsoMu24", "HLT_Mu50"};
+
+bool MCPAnalyzer::passAny(const edm::TriggerResults& tr, const edm::TriggerNames& names,
+                          const std::vector<std::string>& list) {
+  for (unsigned int i = 0; i < tr.size(); ++i) {
+    if (!tr.accept(i)) continue;
+    const std::string& n = names.triggerName(i);
+    for (const auto& t : list)
+      if (n.compare(0, t.size() + 2, t + "_v") == 0) return true;
+  }
+  return false;
 }
 
 
@@ -171,6 +234,7 @@ void MCPAnalyzer::beginJob() {
   tT_->Branch("pixelDedxHits", &b_pixelDedxHits_); tT_->Branch("stripDedxHits", &b_stripDedxHits_);
   tT_->Branch("nPixHitsUsed", &b_nPixUsed_); tT_->Branch("nonL1PixHits", &b_nonL1Pix_);
   tT_->Branch("nPixClusters", &b_nPixClusters_); tT_->Branch("nPixNoFillProb", &b_nPixNoFillProb_);
+  tT_->Branch("nPixQFloor", &b_nPixQFloor_);
   tT_->Branch("nPixSpecInCPE", &b_nPixSpecInCPE_); tT_->Branch("nPixXYpinnedLo", &b_nPixXYpinnedLo_);
   tT_->Branch("nPixXYpinnedHi", &b_nPixXYpinnedHi_); tT_->Branch("nPixXYvalid", &b_nPixXYvalid_);
   tT_->Branch("pixXYrawMin", &b_pixXYrawMin_);
@@ -193,22 +257,25 @@ void MCPAnalyzer::beginJob() {
   
   tT_->Branch("pfMET", &b_pfMET_);
   tT_->Branch("puppiMET", &b_puppiMET_);
-  tT_->Branch("trigNames", &b_trigNames_);
-  tT_->Branch("trigPass", &b_trigPass_);
-  tT_->Branch("HLT_trigPass_OR", &b_passTrigger_OR);
-  TBranch*br = tT_->GetBranch("HLT_trigPass_OR");
-  br->SetTitle("OR_HLT_non-prescaled_triggers");
+  if (saveTrigNames_) { tT_->Branch("trigNames", &b_trigNames_); tT_->Branch("trigPass", &b_trigPass_); }
+  tT_->Branch("HLT_trigPass_OR", &b_passTrigger_OR)->SetTitle("OR of MET + ditau paths");
+  tT_->Branch("passMET", &b_passMET_); tT_->Branch("passJet", &b_passJet_);
+  tT_->Branch("passTau", &b_passTau_); tT_->Branch("passMuon", &b_passMuon_);
+  tT_->Branch("nPV", &b_nPV_);
+  tT_->Branch("muMatched", &b_muMatched_); tT_->Branch("muTight", &b_muTight_);
+  tT_->Branch("muIsTag", &b_muIsTag_); tT_->Branch("muRelIso", &b_muRelIso_); tT_->Branch("muPt", &b_muPt_);
+  tT_->Branch("tpMass", &b_tpMass_); tT_->Branch("tpTagPt", &b_tpTagPt_); tT_->Branch("tpOS", &b_tpOS_);
 
 
   tE_ = fs->make<TTree>("events", "per event");
   tE_->Branch("run", &e_run_); tE_->Branch("lumi", &e_lumi_); tE_->Branch("event", &e_event_);
   tE_->Branch("pfMET", &e_pfMET_);
   tE_->Branch("puppiMET", &e_puppiMET_);
-  tE_->Branch("trigNames", &e_trigNames_);
-  tE_->Branch("trigPass", &e_trigPass_);
-  tE_->Branch("HLT_trigPass_OR", &e_passTrigger_OR);
-  TBranch*br_e = tE_->GetBranch("HLT_trigPass_OR");
-  br_e->SetTitle("OR_HLT_non-prescaled_triggers");
+  if (saveTrigNames_) { tE_->Branch("trigNames", &e_trigNames_); tE_->Branch("trigPass", &e_trigPass_); }
+  tE_->Branch("HLT_trigPass_OR", &e_passTrigger_OR)->SetTitle("OR of MET + ditau paths");
+  tE_->Branch("passMET", &e_passMET_); tE_->Branch("passJet", &e_passJet_);
+  tE_->Branch("passTau", &e_passTau_); tE_->Branch("passMuon", &e_passMuon_);
+  tE_->Branch("nPV", &e_nPV_); tE_->Branch("nTag", &e_nTag_);
   
 
   tG_ = fs->make<TTree>("gen", "per gen MCP");
@@ -217,6 +284,9 @@ void MCPAnalyzer::beginJob() {
   tG_->Branch("gen_charge", &g_charge_); tG_->Branch("gen_pdgId", &g_pdgId_);
   tG_->Branch("matched", &g_matched_); tG_->Branch("reco_pt", &g_recoPt_); tG_->Branch("dR", &g_dR_);
   tG_->Branch("chargeFromCurvature", &g_chargeFromCurv_);
+  tG_->Branch("hasDeDx", &g_hasDeDx_); tG_->Branch("probQ_pixel", &g_probQpixel_);
+  tG_->Branch("pixSizeXresidual", &g_sizeXresidual_);
+  tG_->Branch("nPV", &e_nPV_);
   
 }
 
@@ -241,75 +311,72 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
     }
   }
 
-  edm::Handle<pat::METCollection> pfMETCollection;
-  iEvent.getByToken(metToken_, pfMETCollection);
-  if (!pfMETCollection.isValid()) {
-    edm::LogError("DQMClientExample") << "invalid collection: MET"
-                                      << "\n";
-    return;
+  // invalid MET -> -1, do not drop the event
+  const auto pfMETCollection = iEvent.getHandle(metToken_);
+  const auto puppiMETCollection = iEvent.getHandle(puppiMetToken_);
+  b_pfMET_ = (pfMETCollection.isValid() && !pfMETCollection->empty()) ? pfMETCollection->front().pt() : -1.f;
+  b_puppiMET_ = (puppiMETCollection.isValid() && !puppiMETCollection->empty()) ? puppiMETCollection->front().pt() : -1.f;
+
+  // good PVs
+  b_nPV_ = 0;
+  const auto vtxH = iEvent.getHandle(vertexToken_);
+  const reco::Vertex* pv = nullptr;
+  if (vtxH.isValid()) {
+    for (const auto& v : *vtxH) {
+      if (v.isFake() || v.ndof() <= 4 || std::abs(v.z()) >= 24 || v.position().rho() >= 2) continue;
+      if (!pv) pv = &v;
+      ++b_nPV_;
+    }
   }
-  edm::Handle<pat::METCollection> puppiMETCollection;
-  iEvent.getByToken(puppiMetToken_, puppiMETCollection);
-  if (!puppiMETCollection.isValid()) {
-    edm::LogError("DQMClientExample") << "invalid collection: puppiMET"
-                                      << "\n";
-    return;
-  }
-  b_pfMET_ = pfMETCollection->front().pt();
-  b_puppiMET_ = puppiMETCollection->front().pt();
 
   b_trigNames_.clear();
   b_trigPass_.clear();
-  b_passTrigger_OR.clear(); 
+  b_passTrigger_OR = b_passMET_ = b_passJet_ = b_passTau_ = b_passMuon_ = 0;
 
   const auto triggerH = iEvent.getHandle(triggerResultsToken_);
+  const edm::TriggerNames* trigNamesPtr = nullptr;
   if (triggerH.isValid()) {
     const auto& triggerNames = iEvent.triggerNames(*triggerH);
-    for (unsigned int i = 0; i < triggerH->size(); ++i) {
-      TString name(triggerNames.triggerName(i)); 
-      b_trigNames_.push_back(triggerNames.triggerName(i));
-      b_trigPass_.push_back(triggerH->accept(i) ? 1 : 0);
+    trigNamesPtr = &triggerNames;
+    if (saveTrigNames_) {
+      for (unsigned int i = 0; i < triggerH->size(); ++i) {
+        b_trigNames_.push_back(triggerNames.triggerName(i));
+        b_trigPass_.push_back(triggerH->accept(i) ? 1 : 0);
+      }
+    }
+    b_passTrigger_OR = passAny(*triggerH, triggerNames, kTrigOR_);
+    b_passMET_ = passAny(*triggerH, triggerNames, kTrigMET_);
+    b_passJet_ = passAny(*triggerH, triggerNames, kTrigJet_);
+    b_passTau_ = passAny(*triggerH, triggerNames, kTrigTau_);
+    b_passMuon_ = passAny(*triggerH, triggerNames, kTrigMuon_);
+  }
+
+  // HLT muon objects (IsoMu24) for tag matching
+  std::vector<const pat::TriggerObjectStandAlone*> hltMu;
+  std::vector<pat::TriggerObjectStandAlone> trigObjs;
+  const auto trigObjH = iEvent.getHandle(trigObjToken_);
+  if (trigObjH.isValid() && trigNamesPtr) {
+    trigObjs = *trigObjH;
+    for (auto& o : trigObjs) o.unpackPathNames(*trigNamesPtr);
+    for (const auto& o : trigObjs)
+      if (o.hasPathName("HLT_IsoMu24_v*", true, true)) hltMu.push_back(&o);
+  }
+
+  // muons: tag = tight ID + tight PF iso, pT>26, |eta|<2.4, matched to IsoMu24 object
+  std::vector<const pat::Muon*> muons, tags;
+  const auto muH = iEvent.getHandle(muonToken_);
+  if (muH.isValid()) {
+    for (const auto& mu : *muH) {
+      muons.push_back(&mu);
+      if (mu.pt() < 26 || std::abs(mu.eta()) > 2.4) continue;
+      if (!mu.passed(reco::Muon::CutBasedIdTight) || !mu.passed(reco::Muon::PFIsoTight)) continue;
+      bool trigMatch = false;
+      for (const auto* o : hltMu)
+        if (reco::deltaR(*o, mu) < 0.1) { trigMatch = true; break; }
+      if (trigMatch) tags.push_back(&mu);
     }
   }
 
-    int pass_OR = 0;
-    
-        std::vector<std::string> OR_trigger_list = {
-    "HLT_DoubleMediumDeepTauPFTauHPS30_L2NN_eta2p1_OneProng",
-    "HLT_DoubleMediumDeepTauPFTauHPS35_L2NN_eta2p1",
-    "HLT_DoublePNetTauhPFJet30_Medium_L2NN_eta2p3",
-    "HLT_DoublePNetTauhPFJet30_Tight_L2NN_eta2p3",
-    "HLT_MET105_IsoTrk50",
-    "HLT_MET120_IsoTrk50",
-    "HLT_PFMET105_IsoTrk50",
-    "HLT_PFMET120_PFMHT120_IDTight",
-    "HLT_PFMET120_PFMHT120_IDTight_PFHT60",
-    "HLT_PFMET130_PFMHT130_IDTight",
-    "HLT_PFMET140_PFMHT140_IDTight",
-    "HLT_PFMET200_BeamHaloCleaned",
-    "HLT_PFMET250_NotCleaned",
-    "HLT_PFMETNoMu110_PFMHTNoMu110_IDTight_FilterHF",
-    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight",
-    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_FilterHF",
-    "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight_PFHT60",
-    "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight",
-    "HLT_PFMETNoMu130_PFMHTNoMu130_IDTight_FilterHF",
-    "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight",
-    "HLT_PFMETNoMu140_PFMHTNoMu140_IDTight_FilterHF",
-    "HLT_PFMETTypeOne140_PFMHT140_IDTight",
-    "HLT_PFMETTypeOne200_BeamHaloCleaned"
-  };
-
-
-    for (unsigned int i = 0; i< b_trigNames_.size(); ++i){
-      for (const auto& trigger : OR_trigger_list){
-        if (b_trigNames_[i].find(trigger) != std::string::npos && b_trigPass_[i] == 1){
-          pass_OR = 1;
-        }
-      }
-    }
-
-  b_passTrigger_OR.push_back(pass_OR); 
 
   //filling event level tree outside of track loop
   e_run_ = run; e_lumi_ = lumi; e_event_ = event;
@@ -317,12 +384,16 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
   e_puppiMET_ = b_puppiMET_;
   e_trigNames_ = b_trigNames_;
   e_trigPass_ = b_trigPass_;
-  e_passTrigger_OR = pass_OR;
+  e_passTrigger_OR = b_passTrigger_OR;
+  e_passMET_ = b_passMET_; e_passJet_ = b_passJet_; e_passTau_ = b_passTau_; e_passMuon_ = b_passMuon_;
+  e_nPV_ = b_nPV_; e_nTag_ = tags.size();
   tE_->Fill();
   
   // for gen-tree: track best reco match per MCP
   std::vector<double> mcpBestDR(mcps.size(), 1e9);
   std::vector<double> mcpBestRecoPt(mcps.size(), -1.);
+  std::vector<int> mcpBestHasDeDx(mcps.size(), 0);
+  std::vector<float> mcpBestProbQ(mcps.size(), -1.f), mcpBestSizeX(mcps.size(), -99.f);
 
   // ---- per isolated-track loop ----
   if (tracks.isValid()) {
@@ -354,6 +425,31 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
         b_ptError_ = trk.ptError(); b_normChi2_ = trk.normalizedChi2(); b_validFrac_ = trk.validFraction();
       }
 
+      // muon match (dR<0.02) and T&P mass with the leading other tag
+      b_muMatched_ = b_muTight_ = b_muIsTag_ = 0; b_muRelIso_ = -1.f; b_muPt_ = -1.f;
+      b_tpMass_ = -1.f; b_tpTagPt_ = -1.f; b_tpOS_ = 0;
+      const pat::Muon* muMatch = nullptr; double muBestDR = 0.02;
+      for (const auto* mu : muons) {
+        const double dr = reco::deltaR(*mu, it);
+        if (dr < muBestDR) { muBestDR = dr; muMatch = mu; }
+      }
+      if (muMatch) {
+        b_muMatched_ = 1; b_muPt_ = muMatch->pt();
+        b_muTight_ = muMatch->passed(reco::Muon::CutBasedIdTight);
+        const auto& iso = muMatch->pfIsolationR04();
+        b_muRelIso_ = (iso.sumChargedHadronPt +
+                       std::max(0.f, iso.sumNeutralHadronEt + iso.sumPhotonEt - 0.5f * iso.sumPUPt)) / muMatch->pt();
+        b_muIsTag_ = std::find(tags.begin(), tags.end(), muMatch) != tags.end();
+      }
+      for (const auto* tag : tags) {  // tags are pT-ordered
+        if (tag == muMatch || reco::deltaR(*tag, it) < 0.02) continue;
+        b_tpMass_ = (tag->p4() + it.p4()).mass();
+        b_tpTagPt_ = tag->pt();
+        b_tpOS_ = (tag->charge() * it.charge() < 0);
+        break;
+      }
+      if (tpOnly_ && !(b_tpMass_ > 50 && b_tpMass_ < 130)) continue;  // Z probes only
+
       // dE/dx hits via the isolatedTracks association
       const reco::DeDxHitInfo* hits = nullptr;
       if (dedxAss.isValid()) {
@@ -368,7 +464,7 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
       b_probQpixel_ = r.probQonTrack; b_probQpixelNoL1_ = r.probQonTrackNoL1; b_probXYpixel_ = r.probXYonTrack;
       b_pixelDedxHits_ = r.pixelDedxHits; b_stripDedxHits_ = r.stripDedxHits;
       b_nPixUsed_ = r.nPixHitsUsed; b_nonL1Pix_ = r.nonL1PixHits;
-      b_nPixClusters_ = r.nPixClusters; b_nPixNoFillProb_ = r.nPixNoFillProb;
+      b_nPixClusters_ = r.nPixClusters; b_nPixNoFillProb_ = r.nPixNoFillProb; b_nPixQFloor_ = r.nPixQFloor;
       b_nPixSpecInCPE_ = r.nPixSpecInCPE; b_nPixXYpinnedLo_ = r.nPixXYpinnedLo;
       b_nPixXYpinnedHi_ = r.nPixXYpinnedHi; b_nPixXYvalid_ = r.nPixXYvalid;
       b_pixXYrawMin_ = r.pixXYrawMin;
@@ -395,7 +491,11 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
         b_genMatched_ = 1; b_genPt_ = g->pt(); b_genEta_ = g->eta();
         b_genCharge_ = g->charge(); b_genPdgId_ = g->pdgId(); b_dR_ = bestDR;
         b_chargeFromCurv_ = (b_pt_ > 0) ? b_genPt_ / b_pt_ : -1.;
-        if (bestDR < mcpBestDR[bestIdx]) { mcpBestDR[bestIdx] = bestDR; mcpBestRecoPt[bestIdx] = b_pt_; }
+        if (bestDR < mcpBestDR[bestIdx]) {
+          mcpBestDR[bestIdx] = bestDR; mcpBestRecoPt[bestIdx] = b_pt_;
+          mcpBestHasDeDx[bestIdx] = b_hasDeDx_; mcpBestProbQ[bestIdx] = b_probQpixel_;
+          mcpBestSizeX[bestIdx] = b_pixSizeXresidual_;
+        }
 
       } else {
         b_chargeFromCurv_ = -1.;
@@ -415,6 +515,7 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
     g_recoPt_ = mcpBestRecoPt[m];
     g_dR_ = (mcpBestDR[m] < 1e9) ? mcpBestDR[m] : -1.;
     g_chargeFromCurv_ = (g_matched_ && g_recoPt_ > 0) ? g_pt_ / g_recoPt_ : -1.;
+    g_hasDeDx_ = mcpBestHasDeDx[m]; g_probQpixel_ = mcpBestProbQ[m]; g_sizeXresidual_ = mcpBestSizeX[m];
     tG_->Fill();
   }
 }
@@ -429,7 +530,11 @@ void MCPAnalyzer::fillDescriptions(edm::ConfigurationDescriptions& descriptions)
   desc.add<edm::InputTag>("primaryVertices", edm::InputTag("offlineSlimmedPrimaryVertices"));
   desc.add<std::string>("pixelCPE", "PixelCPETemplateReco");
   desc.add<int>("mcpPdgId", 10000200);
-  desc.add<edm::InputTag>("TriggerResults", edm::InputTag("TriggerResults", "", "HLT"));
+  desc.add<edm::InputTag>("triggerResults", edm::InputTag("TriggerResults", "", "HLT"));
+  desc.add<edm::InputTag>("muons", edm::InputTag("slimmedMuons"));
+  desc.add<edm::InputTag>("triggerObjects", edm::InputTag("slimmedPatTrigger"));
+  desc.add<bool>("saveTrigNames", true);
+  desc.add<bool>("tpOnly", false);
   descriptions.add("MCPAnalyzer", desc);
 }
 

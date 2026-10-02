@@ -13,8 +13,20 @@ cd CMSSW_15_0_19_patch2/src && cmsenv && scram b -j8
 cmsRun MCPAnalyzer/Analyzer/test/mcpAnalyzer_cfg.py \
     inputFiles=file:<MiniAOD.root> maxEvents=-1 outputFile=out.root
 ```
-Key config parameters (`test/mcpAnalyzer_cfg.py`): `gtag` (default `150X_mcRun3_2024_realistic_v2`),
-`pixelCPE` (`PixelCPETemplateReco`).
+Key config parameters (`test/mcpAnalyzer_cfg.py`):
+- `isData` (default `False`); `gtag` defaults to `150X_mcRun3_2024_realistic_v2` (MC) or `150X_dataRun3_v2` (data).
+- `lumiMask=<Golden JSON>` (data only), e.g. `/cvmfs/cms-griddata.cern.ch/cat/metadata/DC/Collisions24/latest/2024G_Golden.json`.
+- `saveTrigNames` (default `True`): store all HLT names/decisions per event and per track. Set `False` for large ntuples.
+- `tpOnly` (default `False`): keep only Z tag-and-probe tracks (50 < `tpMass` < 130), skips probQ for the rest.
+- `pixelCPE` (`PixelCPETemplateReco`).
+- `outputFile` is used as given (no `_numEventN` suffix).
+
+Data example (Muon PD, Z probes only):
+```
+cmsRun MCPAnalyzer/Analyzer/test/mcpAnalyzer_cfg.py isData=True tpOnly=True saveTrigNames=False \
+    lumiMask=/cvmfs/cms-griddata.cern.ch/cat/metadata/DC/Collisions24/latest/2024G_Golden.json \
+    inputFiles=root://cms-xrd-global.cern.ch//store/data/Run2024G/Muon0/MINIAOD/MINIv6NANOv15-v1/<file>.root
+```
 
 On a background sample (e.g. QCD) there is no MCP, so every track has `genMatched=0`; the
 discriminant branches are still filled for all tracks.
@@ -32,10 +44,10 @@ for Q in 6 30 90 ; do          # Q-tag = 3 x charge(e); 6->2e, 30->10e, 90->30e
 done
 ```
 
-**Background** (muon-enriched QCD, `RunIII2024Summer24MiniAODv6-150X`, one file copied into `src/`):
+**Background** (muon-enriched QCD, `RunIII2024Summer24MiniAODv6-150X`):
 ```
 cmsRun MCPAnalyzer/Analyzer/test/mcpAnalyzer_cfg.py \
-    inputFiles=file:000b4dc9-1495-498c-b742-4ca912780503.root \
+    inputFiles=file: /ceph/cms/store/user/tvami/HSCP_MCP/QCD/000b4dc9-1495-498c-b742-4ca912780503.root \
     maxEvents=-1 outputFile=$HOME/HSCP-MCP/mcp_QCD_Pt50to80_v2.root
 ```
 The QCD ntuple is the per-track discriminant-shape reference (its tracks all have `genMatched=0`).
@@ -100,7 +112,16 @@ primary discriminant (dE/dx / probQ reach AUC ≈ 0.97).
 - Calorimeter (mostly not useful — see studies): `caloEmEnergy/HadEnergy` (matched calo-jet, an
   isolation proxy), packed-cand `pcCaloFrac/pcHcalFrac`.
 - Gen match: `genMatched`, `gen_pt/eta/charge/pdgId`, `dR`, `chargeFromCurvature = gen_pt / reco_pt`
-  (peaks at the true charge since reco assumes |q|=1). The `gen` tree holds one entry per gen MCP.
+  (peaks at the true charge since reco assumes |q|=1). The `gen` tree holds one entry per gen MCP,
+  with `hasDeDx`, `probQ_pixel`, `pixSizeXresidual` of its best-matched track (dE/dx acceptance).
+- Trigger (event and track trees): per-group bits `passMET`, `passJet`, `passTau` (ditau, Tau PD),
+  `passMuon` (IsoMu24, Mu50); `HLT_trigPass_OR` is the old MET + ditau OR. All group paths are
+  unprescaled in 2024C-I (PFMETNoMu110_FilterHF was dropped: disabled from 2024F).
+- `nPV` (good PVs), event-level `nTag`.
+- Muon tag-and-probe (track tree): `muMatched` (slimmedMuon within dR<0.02), `muTight`, `muRelIso`,
+  `muPt`, `muIsTag`; `tpMass`, `tpTagPt`, `tpOS` with the leading tag (tight ID + tight PF iso,
+  pT>26, |eta|<2.4, matched to an HLT_IsoMu24 object).
+- An invalid MET collection now gives `pfMET`/`puppiMET` = -1 instead of dropping the event.
 
 ## Test / study scripts (`test/`)
 These use PyROOT, so they need the CMSSW ROOT on the path — run `cmsenv` from
@@ -128,7 +149,7 @@ script from `~/HSCP-MCP/`.
   (`..._scatter_Q*`); the COLZ plots include the Pearson correlation factor `ρ` as an on-canvas label.
   It also writes a ROC for the plane (`roc_probQpixel_sizeXresidual_Q*`):
   signal-eff vs background-eff for each axis (higher = signal-like, keep `v>=thr`), with the AUC and
-  the optimal single-axis cut (max Youden's J) marked, plus the best 2D rectangular cut from a grid
+  the optimal single-axis cut (max SIC = eps_s/sqrt(eps_b), requiring >=10 bkg events) marked, plus the best 2D rectangular cut from a grid
   scan. The in-plane signal acceptance (fraction with `probQ_pixel` defined) is printed and labelled,
   since the ROC efficiencies are conditional on entering the plane. It additionally auto-discovers the
   M=2000 charge ladder in the output dir (`mcp_M2000_Q{24,30,45,72,90}_v2.root` = Q=8/10/15/24/30e)

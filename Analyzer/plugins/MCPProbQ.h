@@ -45,6 +45,7 @@ struct MCPDeDxResult {
   // Per-hit probXY diagnostics (to tell a genuine probXY~0 from a degenerate one).
   int nPixClusters = 0;      // pixel hits with a SiPixelCluster in the DeDxHitInfo
   int nPixNoFillProb = 0;    // CPE did not fill the probability word (hasFilledProb == false)
+  int nPixQFloor = 0;        // hits with probQ at/below the floor (saturated / off-template)
   int nPixSpecInCPE = 0;     // excluded: on edge / bad pixels / spans two ROCs
   int nPixXYpinnedLo = 0;    // raw CPE probXY <= 0  (shape totally inconsistent)
   int nPixXYpinnedHi = 0;    // raw CPE probXY >= 1
@@ -269,6 +270,7 @@ private:
                              SiPixelRecHitQuality::thePacking.hasBadPixels(qword) ||
                              SiPixelRecHitQuality::thePacking.spansTwoROCs(qword);
       if (specInCPE) r.nPixSpecInCPE++;
+      if (!specInCPE && probQ <= kProbHitFloor) r.nPixQFloor++;
 
       r.nPixHitsUsed++;
       // A per-hit probQ at/below the floor is a saturated / off-template cluster, not a
