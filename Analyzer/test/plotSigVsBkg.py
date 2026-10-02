@@ -166,8 +166,14 @@ def auc_of(pts):
         a += (p[i][0] - p[i - 1][0]) * (p[i][1] + p[i - 1][1]) / 2.0
     return a
 
-def best_J(pts):  # max Youden's J = sigEff - bkgEff
-    return max(pts, key=lambda t: t[1] - t[0])  # (be, se, thr)
+NB_MIN = 10  # min background events passing for a statistically meaningful SIC (avoids eb->0 blow-up)
+
+def sic(se, be):  # significance improvement: eps_s / sqrt(eps_b)
+    return se / math.sqrt(be) if be > 0 else 0.0
+
+def best_SIC(pts, nb):  # optimum = max SIC over points with >= NB_MIN bkg events
+    cand = [t for t in pts if t[0] > 0 and t[0] * nb >= NB_MIN] or [t for t in pts if t[0] > 0]
+    return max(cand, key=lambda t: sic(t[1], t[0]))  # (be, se, thr)
 
 AXES = [("-log_{10}(probQ_{pixel})", "probQpixel", 0, [p[0] for p in sigp], [p[0] for p in bkgp], ROOT.kRed + 1, 20),
         ("pixel sizeX residual",       "sizeXresidual", 1, [p[1] for p in sigp], [p[1] for p in bkgp], ROOT.kAzure + 1, 21)]
@@ -187,27 +193,29 @@ for title, key, idx, sv, bv, col, mk in AXES:
     for be, se, _ in sorted((p[0], p[1], p[2]) for p in pts):
         g.SetPoint(g.GetN(), be, se)
     g.SetLineColor(col); g.SetLineWidth(3); g.SetMarkerColor(col); g.Draw("L same"); keep.append(g)
-    be, se, thr = best_J(pts); best[key] = (be, se, thr)
+    be, se, thr = best_SIC(pts, len(bv)); best[key] = (be, se, thr)
     m = ROOT.TMarker(be, se, mk); m.SetMarkerColor(col); m.SetMarkerSize(1.6); m.Draw(); keep.append(m)
     leg.AddEntry(g, "%s  (AUC=%.3f)" % (title, a), "l")
-    print("  %-22s AUC=%.3f  best cut: keep v>=%.2f  -> sigEff=%.3f bkgEff=%.3f (rej=%.3f)"
-          % (title, a, thr, se, be, 1 - be))
+    print("  %-22s AUC=%.3f  best cut (max SIC): keep v>=%.2f  -> sigEff=%.3f bkgEff=%.3f (rej=%.3f, SIC=%.2f)"
+          % (title, a, thr, se, be, 1 - be, sic(se, be)))
 leg.Draw(); cmsstyle.cms_label(c)
 
-# 2D rectangular cut scan: keep x>=xt AND y>=yt, maximize Youden's J
+# 2D rectangular cut scan: keep x>=xt AND y>=yt, maximize SIC = eps_s/sqrt(eps_b)
 xg = [i * 0.5 for i in range(0, int(2 * CAP) + 1)]
 yg = [i * 0.25 for i in range(-4, 25)]
 ns, nb = len(sigp), len(bkgp)
 b2 = (-1, None, None, None, None)
 for xt in xg:
     for yt in yg:
+        nbp = sum(1 for x, y in bkgp if x >= xt and y >= yt)
+        if nbp < NB_MIN: continue
         se = sum(1 for x, y in sigp if x >= xt and y >= yt) / ns
-        be = sum(1 for x, y in bkgp if x >= xt and y >= yt) / nb
-        J = se - be
-        if J > b2[0]: b2 = (J, xt, yt, se, be)
+        be = nbp / nb
+        s = sic(se, be)
+        if s > b2[0]: b2 = (s, xt, yt, se, be)
 _, bxt, byt, bse, bbe = b2
-print("  2D best cut: -log10(probQ_pixel)>=%.2f AND sizeXresidual>=%.2f -> sigEff=%.3f bkgEff=%.3f (rej=%.3f)"
-      % (bxt, byt, bse, bbe, 1 - bbe))
+print("  2D best cut (max SIC): -log10(probQ_pixel)>=%.2f AND sizeXresidual>=%.2f -> sigEff=%.3f bkgEff=%.3f (rej=%.3f, SIC=%.2f)"
+      % (bxt, byt, bse, bbe, 1 - bbe, sic(bse, bbe)))
 m2 = ROOT.TMarker(bbe, bse, 29); m2.SetMarkerColor(ROOT.kGreen + 2); m2.SetMarkerSize(2.4); m2.Draw(); keep.append(m2)
 leg.AddEntry(m2, "2D cut: probQpix>=%.1f & szX>=%.2f" % (bxt, byt), "p")
 lt = ROOT.TLatex(); lt.SetNDC(); lt.SetTextSize(0.026)
@@ -294,18 +302,20 @@ for Qe, sp, acc in charge_pairs:
     g = ROOT.TGraph()
     for be, se in env: g.SetPoint(g.GetN(), be, se)
     g.SetLineColor(QCOL[Qe]); g.SetLineWidth(3); g.Draw("L same"); keep2.append(g)
-    # optimum = grid cut maximizing Youden's J = sigEff - bkgEff
-    bk = max(sg, key=lambda k: sg[k] - bkg_grid[k])
+    # optimum = grid cut maximizing SIC = eps_s/sqrt(eps_b)  (>= NB_MIN bkg events)
+    nbkg = len(bkgp)
+    cand = [k for k in sg if bkg_grid[k] * nbkg >= NB_MIN] or [k for k in sg if bkg_grid[k] > 0]
+    bk = max(cand, key=lambda k: sic(sg[k], bkg_grid[k]))
     bse, bbe = sg[bk], bkg_grid[bk]
     star = ROOT.TMarker(max(bbe, XMIN), bse, 29); star.SetMarkerColor(QCOL[Qe]); star.SetMarkerSize(2.6)
     star.Draw(); keep2.append(star)
-    legC.AddEntry(g, "Q=%de: pQ#geq%.1f, szX#geq%.2f (#varepsilon_{s}=%.2f, #varepsilon_{b}=%.3f, AUC=%.3f)"
-                  % (Qe, bk[0], bk[1], bse, bbe, trap_auc(env)), "l")
-    print("  Q=%-2de combined opt: probQpix>=%.2f sizeX>=%.2f -> sigEff=%.3f bkgEff=%.3f (rej=%.3f) AUC=%.3f"
-          % (Qe, bk[0], bk[1], bse, bbe, 1 - bbe, trap_auc(env)))
+    legC.AddEntry(g, "Q=%de: pQ#geq%.1f, szX#geq%.2f (#varepsilon_{s}=%.2f, #varepsilon_{b}=%.3f, SIC=%.1f)"
+                  % (Qe, bk[0], bk[1], bse, bbe, sic(bse, bbe)), "l")
+    print("  Q=%-2de combined opt (max SIC): probQpix>=%.2f sizeX>=%.2f -> sigEff=%.3f bkgEff=%.3f (rej=%.3f) SIC=%.2f AUC=%.3f"
+          % (Qe, bk[0], bk[1], bse, bbe, 1 - bbe, sic(bse, bbe), trap_auc(env)))
 legC.Draw()
 lt = ROOT.TLatex(); lt.SetNDC(); lt.SetTextSize(0.024)
-lt.DrawLatex(0.15, 0.46, "combined = best probQ_{pixel}#timessizeX cut;  #star = optimum")
+lt.DrawLatex(0.15, 0.46, "combined = best probQ_{pixel}#timessizeX cut;  #star = max SIC")
 cmsstyle.cms_label(c); cmsstyle.save(c, "%s/roc_charges_combined" % OUT)
 print("wrote roc_charges_combined")
 
@@ -323,16 +333,16 @@ for Qe, sp, acc in charge_pairs:
     g = ROOT.TGraph()
     for be, se, _ in sorted((q[0], q[1], q[2]) for q in pts): g.SetPoint(g.GetN(), max(be, XMIN), se)
     g.SetLineColor(QCOL[Qe]); g.SetLineWidth(3); g.Draw("L same"); keep3.append(g)
-    bbe, bse, bthr = best_J(pts)
+    bbe, bse, bthr = best_SIC(pts, len(bvy))
     star = ROOT.TMarker(max(bbe, XMIN), bse, 29); star.SetMarkerColor(QCOL[Qe]); star.SetMarkerSize(2.6)
     star.Draw(); keep3.append(star)
-    legS.AddEntry(g, "Q=%de: szX#geq%.2f (#varepsilon_{s}=%.2f, #varepsilon_{b}=%.3f, AUC=%.3f)"
-                  % (Qe, bthr, bse, bbe, trap_auc(sorted((q[0], q[1]) for q in pts))), "l")
-    print("  Q=%-2de sizeX opt: sizeX>=%.2f -> sigEff=%.3f bkgEff=%.3f (rej=%.3f) AUC=%.3f"
-          % (Qe, bthr, bse, bbe, 1 - bbe, trap_auc(sorted((q[0], q[1]) for q in pts))))
+    legS.AddEntry(g, "Q=%de: szX#geq%.2f (#varepsilon_{s}=%.2f, #varepsilon_{b}=%.3f, SIC=%.1f)"
+                  % (Qe, bthr, bse, bbe, sic(bse, bbe)), "l")
+    print("  Q=%-2de sizeX opt (max SIC): sizeX>=%.2f -> sigEff=%.3f bkgEff=%.3f (rej=%.3f) SIC=%.2f AUC=%.3f"
+          % (Qe, bthr, bse, bbe, 1 - bbe, sic(bse, bbe), trap_auc(sorted((q[0], q[1]) for q in pts))))
 legS.Draw()
 lt = ROOT.TLatex(); lt.SetNDC(); lt.SetTextSize(0.024)
-lt.DrawLatex(0.15, 0.46, "pixel sizeX residual only;  #star = optimum")
+lt.DrawLatex(0.15, 0.46, "pixel sizeX residual only;  #star = max SIC")
 cmsstyle.cms_label(c); cmsstyle.save(c, "%s/roc_charges_sizeX" % OUT)
 print("wrote roc_charges_sizeX")
 
