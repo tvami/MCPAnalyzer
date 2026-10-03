@@ -127,6 +127,12 @@ private:
   int b_charge_, b_nPixHit_, b_nTkLayers_, b_highPurity_;
   float b_caloEmEnergy_, b_caloHadEnergy_;  // matched calo-jet EM/HAD energy along the track
   float b_pcCaloFrac_, b_pcHcalFrac_;       // packed-candidate calo fractions
+  float b_dxy_, b_dz_, b_dxyErr_, b_dzErr_;  // impact parameters (IsolatedTrack, w.r.t. the PV)
+  float b_isoCh_, b_isoNh_, b_isoPh_, b_isoPU_;          // pfIsolationDR03 components [GeV]
+  float b_miniIsoCh_, b_miniIsoNh_, b_miniIsoPh_;        // miniPFIsolation components [GeV]
+  int b_fromPV_, b_nValidHits_, b_nValidStripHits_, b_nPixLayers_;
+  int b_lostInner_, b_lostLayers_, b_lostOuter_;          // IsolatedTrack lost-layer categories
+  int b_nMissInner_, b_nMissOuter_, b_nLostHits_;         // hitPattern missing/lost hits
   float b_dedxStripBuiltin_, b_dedxPixelBuiltin_;
   float b_probQpixel_, b_probQpixelNoL1_, b_probXYpixel_;
   std::vector<float> b_pixelDedxHits_, b_stripDedxHits_;
@@ -239,6 +245,14 @@ void MCPAnalyzer::beginJob() {
   tT_->Branch("nTrackerLayers", &b_nTkLayers_); tT_->Branch("highPurity", &b_highPurity_);
   tT_->Branch("caloEmEnergy", &b_caloEmEnergy_); tT_->Branch("caloHadEnergy", &b_caloHadEnergy_);
   tT_->Branch("pcCaloFrac", &b_pcCaloFrac_); tT_->Branch("pcHcalFrac", &b_pcHcalFrac_);
+  tT_->Branch("dxy", &b_dxy_); tT_->Branch("dz", &b_dz_); tT_->Branch("dxyError", &b_dxyErr_); tT_->Branch("dzError", &b_dzErr_);
+  tT_->Branch("isoCh", &b_isoCh_); tT_->Branch("isoNh", &b_isoNh_); tT_->Branch("isoPh", &b_isoPh_); tT_->Branch("isoPU", &b_isoPU_);
+  tT_->Branch("miniIsoCh", &b_miniIsoCh_); tT_->Branch("miniIsoNh", &b_miniIsoNh_); tT_->Branch("miniIsoPh", &b_miniIsoPh_);
+  tT_->Branch("fromPV", &b_fromPV_); tT_->Branch("nValidHits", &b_nValidHits_);
+  tT_->Branch("nValidStripHits", &b_nValidStripHits_); tT_->Branch("nPixelLayers", &b_nPixLayers_);
+  tT_->Branch("lostInnerLayers", &b_lostInner_); tT_->Branch("lostLayers", &b_lostLayers_); tT_->Branch("lostOuterLayers", &b_lostOuter_);
+  tT_->Branch("nMissingInnerHits", &b_nMissInner_); tT_->Branch("nMissingOuterHits", &b_nMissOuter_);
+  tT_->Branch("nLostHits", &b_nLostHits_);
   tT_->Branch("dedxStrip_builtin", &b_dedxStripBuiltin_); tT_->Branch("dedxPixel_builtin", &b_dedxPixelBuiltin_);
   tT_->Branch("probQ_pixel", &b_probQpixel_); tT_->Branch("probQ_pixelNoL1", &b_probQpixelNoL1_);
   tT_->Branch("probXY_pixel", &b_probXYpixel_);
@@ -439,6 +453,19 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
       b_nPixHit_ = it.hitPattern().numberOfValidPixelHits();
       b_nTkLayers_ = it.hitPattern().trackerLayersWithMeasurement();
       b_highPurity_ = it.isHighPurityTrack() ? 1 : 0;
+      const auto& hp = it.hitPattern();
+      b_nValidHits_ = hp.numberOfValidHits(); b_nValidStripHits_ = hp.numberOfValidStripHits();
+      b_nPixLayers_ = hp.pixelLayersWithMeasurement();
+      b_nMissInner_ = hp.numberOfLostHits(reco::HitPattern::MISSING_INNER_HITS);
+      b_nMissOuter_ = hp.numberOfLostHits(reco::HitPattern::MISSING_OUTER_HITS);
+      b_nLostHits_ = hp.numberOfLostHits(reco::HitPattern::TRACK_HITS);
+      b_lostInner_ = it.lostInnerLayers(); b_lostLayers_ = it.lostLayers(); b_lostOuter_ = it.lostOuterLayers();
+      b_dxy_ = it.dxy(); b_dz_ = it.dz(); b_dxyErr_ = it.dxyError(); b_dzErr_ = it.dzError();
+      b_fromPV_ = it.fromPV();
+      b_isoCh_ = it.pfIsolationDR03().chargedHadronIso(); b_isoNh_ = it.pfIsolationDR03().neutralHadronIso();
+      b_isoPh_ = it.pfIsolationDR03().photonIso(); b_isoPU_ = it.pfIsolationDR03().puChargedHadronIso();
+      b_miniIsoCh_ = it.miniPFIsolation().chargedHadronIso(); b_miniIsoNh_ = it.miniPFIsolation().neutralHadronIso();
+      b_miniIsoPh_ = it.miniPFIsolation().photonIso();
       b_dedxStripBuiltin_ = it.dEdxStrip();
       b_dedxPixelBuiltin_ = it.dEdxPixel();
       b_caloEmEnergy_ = it.matchedCaloJetEmEnergy();
