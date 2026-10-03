@@ -154,6 +154,7 @@ private:
   unsigned int e_run_, e_lumi_; unsigned long long e_event_;
   float e_pfMET_;
   float e_puppiMET_;
+  float e_pfMETphi_, e_metNoMu_; int e_nTightMu_;  // MET with tight muons added back (MET-leg turn-on)
   std::vector<std::string> e_trigNames_;
   std::vector<int> e_trigPass_;
   int e_passTrigger_OR;
@@ -282,6 +283,7 @@ void MCPAnalyzer::beginJob() {
   tE_->Branch("run", &e_run_); tE_->Branch("lumi", &e_lumi_); tE_->Branch("event", &e_event_);
   tE_->Branch("pfMET", &e_pfMET_);
   tE_->Branch("puppiMET", &e_puppiMET_);
+  tE_->Branch("pfMETphi", &e_pfMETphi_); tE_->Branch("metNoMu", &e_metNoMu_); tE_->Branch("nTightMu", &e_nTightMu_);
   if (saveTrigNames_) { tE_->Branch("trigNames", &e_trigNames_); tE_->Branch("trigPass", &e_trigPass_); }
   tE_->Branch("HLT_trigPass_OR", &e_passTrigger_OR)->SetTitle("OR of MET + ditau paths");
   tE_->Branch("passMET", &e_passMET_); tE_->Branch("passJet", &e_passJet_);
@@ -401,6 +403,16 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
   e_run_ = run; e_lumi_ = lumi; e_event_ = event;
   e_pfMET_ = b_pfMET_;
   e_puppiMET_ = b_puppiMET_;
+  e_pfMETphi_ = -9.f; e_metNoMu_ = -1.f; e_nTightMu_ = 0;
+  if (pfMETCollection.isValid() && !pfMETCollection->empty()) {
+    double mx = pfMETCollection->front().px(), my = pfMETCollection->front().py();
+    e_pfMETphi_ = pfMETCollection->front().phi();
+    for (const auto* mu : muons) {
+      if (mu->pt() < 10 || !pv || !mu->isTightMuon(*pv)) continue;
+      mx += mu->px(); my += mu->py(); ++e_nTightMu_;
+    }
+    e_metNoMu_ = std::hypot(mx, my);
+  }
   e_trigNames_ = b_trigNames_;
   e_trigPass_ = b_trigPass_;
   e_passTrigger_OR = b_passTrigger_OR;
