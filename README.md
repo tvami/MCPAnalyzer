@@ -52,6 +52,21 @@ cmsRun MCPAnalyzer/Analyzer/test/mcpAnalyzer_cfg.py \
 ```
 The QCD ntuple is the per-track discriminant-shape reference (its tracks all have `genMatched=0`).
 
+## Z->mumu MIP reference on RECO (`MCPZProbeAnalyzer`)
+Runs on RECO / RAW-RECO, e.g. the Run-3 `ZMu` skim (`/Muon{0,1}/Run2024*-ZMu-*/RAW-RECO`) or DY AODSIM.
+Probes are `generalTracks` (pT>10, |eta|<2.4) in 50 < m(tag, probe) < 130 GeV; dE/dx hits come from the
+RECO `dedxHitInfo` association, which keeps every track with pT>10 GeV, so there is no MiniAOD pT>50 bias.
+Tag: tight ID, PF iso R04 < 0.15, pT>26, matched to the `HLT_IsoMu24` filter object in
+`hltTriggerSummaryAOD`. Track-tree branch names follow `MCPAnalyzer` (module label `MCPAnalyzer`), plus
+`dedxPrescale` and `tagTrigObj`.
+```
+cmsRun MCPAnalyzer/Analyzer/test/mcpZProbe_cfg.py \
+    lumiMask=/cvmfs/cms-griddata.cern.ch/cat/metadata/DC/Collisions24/latest/2024G_Golden.json \
+    inputFiles=root://cms-xrd-global.cern.ch//store/data/Run2024G/Muon0/RAW-RECO/ZMu-PromptReco-v1/<file>.root
+```
+One ZMu file (about 900 events) gives about 1000 OS Z probes, all with dE/dx hits. Use `isData=False` on MC.
+In condor job lists give `mcpZProbe_cfg.py` as the 5th column.
+
 ## Discriminating variables (in the `tracks` tree)
 
 ### Charge probability — `probQ_pixel`

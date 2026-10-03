@@ -50,6 +50,8 @@
 #include "RecoLocalTracker/ClusterParameterEstimator/interface/PixelClusterParameterEstimator.h"
 
 #include "TTree.h"
+#include "TH1D.h"
+#include "SimDataFormats/GeneratorProducts/interface/GenEventInfoProduct.h"
 
 #include "MCPProbQ.h"
 
@@ -90,6 +92,10 @@ private:
   const edm::EDGetTokenT<pat::TriggerObjectStandAloneCollection> trigObjToken_;
   const bool saveTrigNames_;
   const bool tpOnly_;
+  const bool requireTrig_;  // keep only JetMET or Tau triggered events
+  const bool requireDeDx_;  // store only tracks with DeDxHitInfo
+  const edm::EDGetTokenT<GenEventInfoProduct> genInfoToken_;
+  TH1D* hCount_ = nullptr;  // bin 1: events seen, bin 2: sum of gen weights, bin 3: kept
 
   // HLT groups, matched as "<name>_v" prefixes
   static const std::vector<std::string> kTrigOR_, kTrigMET_, kTrigJet_, kTrigTau_, kTrigMuon_;
@@ -111,6 +117,7 @@ private:
   int b_passTrigger_OR;
   int b_passMET_, b_passJet_, b_passTau_, b_passMuon_;
   int b_nPV_;
+  float b_genWeight_;
   // muon tag-and-probe
   int b_muMatched_, b_muTight_, b_muIsTag_; float b_muRelIso_, b_muPt_;
   float b_tpMass_, b_tpTagPt_; int b_tpOS_;
@@ -172,7 +179,10 @@ MCPAnalyzer::MCPAnalyzer(const edm::ParameterSet& iC)
       muonToken_(consumes<std::vector<pat::Muon>>(iC.getParameter<edm::InputTag>("muons"))),
       trigObjToken_(consumes<pat::TriggerObjectStandAloneCollection>(iC.getParameter<edm::InputTag>("triggerObjects"))),
       saveTrigNames_(iC.getParameter<bool>("saveTrigNames")),
-      tpOnly_(iC.getParameter<bool>("tpOnly")) {
+      tpOnly_(iC.getParameter<bool>("tpOnly")),
+      requireTrig_(iC.getParameter<bool>("requireTrig")),
+      requireDeDx_(iC.getParameter<bool>("requireDeDx")),
+      genInfoToken_(consumes<GenEventInfoProduct>(edm::InputTag("generator"))) {
   usesResource("TFileService");
 }
 
@@ -261,12 +271,13 @@ void MCPAnalyzer::beginJob() {
   tT_->Branch("HLT_trigPass_OR", &b_passTrigger_OR)->SetTitle("OR of MET + ditau paths");
   tT_->Branch("passMET", &b_passMET_); tT_->Branch("passJet", &b_passJet_);
   tT_->Branch("passTau", &b_passTau_); tT_->Branch("passMuon", &b_passMuon_);
-  tT_->Branch("nPV", &b_nPV_);
+  tT_->Branch("nPV", &b_nPV_); tT_->Branch("genWeight", &b_genWeight_);
   tT_->Branch("muMatched", &b_muMatched_); tT_->Branch("muTight", &b_muTight_);
   tT_->Branch("muIsTag", &b_muIsTag_); tT_->Branch("muRelIso", &b_muRelIso_); tT_->Branch("muPt", &b_muPt_);
   tT_->Branch("tpMass", &b_tpMass_); tT_->Branch("tpTagPt", &b_tpTagPt_); tT_->Branch("tpOS", &b_tpOS_);
 
 
+  hCount_ = fs->make<TH1D>("counts", "events seen, sum gen weight, kept", 3, 0.5, 3.5);
   tE_ = fs->make<TTree>("events", "per event");
   tE_->Branch("run", &e_run_); tE_->Branch("lumi", &e_lumi_); tE_->Branch("event", &e_event_);
   tE_->Branch("pfMET", &e_pfMET_);
@@ -275,7 +286,7 @@ void MCPAnalyzer::beginJob() {
   tE_->Branch("HLT_trigPass_OR", &e_passTrigger_OR)->SetTitle("OR of MET + ditau paths");
   tE_->Branch("passMET", &e_passMET_); tE_->Branch("passJet", &e_passJet_);
   tE_->Branch("passTau", &e_passTau_); tE_->Branch("passMuon", &e_passMuon_);
-  tE_->Branch("nPV", &e_nPV_); tE_->Branch("nTag", &e_nTag_);
+  tE_->Branch("nPV", &e_nPV_); tE_->Branch("nTag", &e_nTag_); tE_->Branch("genWeight", &b_genWeight_);
   
 
   tG_ = fs->make<TTree>("gen", "per gen MCP");
@@ -378,6 +389,14 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
   }
 
 
+  // normalization counters, then the optional trigger skim
+  const auto genH = iEvent.getHandle(genInfoToken_);
+  hCount_->Fill(1);
+  b_genWeight_ = genH.isValid() ? genH->weight() : 1.f;
+  hCount_->Fill(2, b_genWeight_);
+  if (requireTrig_ && !(b_passMET_ || b_passJet_ || b_passTau_)) return;
+  hCount_->Fill(3);
+
   //filling event level tree outside of track loop
   e_run_ = run; e_lumi_ = lumi; e_event_ = event;
   e_pfMET_ = b_pfMET_;
@@ -458,6 +477,7 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
         if (hitRef.isNonnull()) hits = &(*hitRef);
       }
       b_hasDeDx_ = (hits != nullptr) ? 1 : 0;
+      if (requireDeDx_ && !hits) continue;  // data skim; also skipped in gen matching
 
       MCPDeDxResult r = MCPProbQ::compute(hits, it.px(), it.py(), it.pz(), it.charge(),
                                           tkGeom, tTopo, pixelCPE);
@@ -535,6 +555,8 @@ void MCPAnalyzer::fillDescriptions(edm::ConfigurationDescriptions& descriptions)
   desc.add<edm::InputTag>("triggerObjects", edm::InputTag("slimmedPatTrigger"));
   desc.add<bool>("saveTrigNames", true);
   desc.add<bool>("tpOnly", false);
+  desc.add<bool>("requireTrig", false);
+  desc.add<bool>("requireDeDx", false);
   descriptions.add("MCPAnalyzer", desc);
 }
 
