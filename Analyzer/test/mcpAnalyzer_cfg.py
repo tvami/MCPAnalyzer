@@ -19,6 +19,10 @@ options.register('outputEvery', 100,
                  VarParsing.multiplicity.singleton, VarParsing.varType.int, "")
 options.register('tpOnly', False,
                  VarParsing.multiplicity.singleton, VarParsing.varType.bool, "Keep only Z tag-and-probe tracks")
+options.register('requireDeDx', False,
+                 VarParsing.multiplicity.singleton, VarParsing.varType.bool, "Store only tracks with DeDxHitInfo")
+options.register('requireTrig', False,
+                 VarParsing.multiplicity.singleton, VarParsing.varType.bool, "Keep only JetMET or Tau triggered events")
 options.parseArguments()
 if not options.gtag:
     options.gtag = '150X_dataRun3_v2' if options.isData else '150X_mcRun3_2024_realistic_v2'
@@ -61,6 +65,8 @@ process.MCPAnalyzer = cms.EDAnalyzer(
     triggerObjects=cms.InputTag("slimmedPatTrigger"),
     saveTrigNames=cms.bool(options.saveTrigNames),
     tpOnly=cms.bool(options.tpOnly),
+    requireTrig=cms.bool(options.requireTrig),
+    requireDeDx=cms.bool(options.requireDeDx),
 )
 
 process.TFileService = cms.Service("TFileService", fileName=cms.string(options.outputFile))

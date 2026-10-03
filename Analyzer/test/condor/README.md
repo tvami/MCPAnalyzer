@@ -8,6 +8,7 @@ mkdir -p run && cd run && mkdir -p logs output
 cp ../run_mcpana.sh ../mcpana.sub .
 condor_submit mcpana.sub joblist=jobs.txt
 ```
-Each job line is `<name> <maxEvents> <cfg args separated by ;> <comma-separated /store files>`;
+Each job line is `<name> <maxEvents> <cfg args separated by ;> <comma-separated /store files> [cfg]`
+(`cfg` defaults to `mcpAnalyzer_cfg.py`; use `mcpZProbe_cfg.py` for RECO Z probes). Join several input files with `+`, not `,`: condor splits queue columns on commas;
 outputs land in `output/<name>.root` with the cmsRun log `output/cmsrun_<name>.log` (last line `exit <code>`).
 Workers need the rhel8 singularity image (set in `mcpana.sub`), and read inputs over xrootd.

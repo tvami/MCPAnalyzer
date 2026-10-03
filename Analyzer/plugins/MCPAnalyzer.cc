@@ -50,6 +50,8 @@
 #include "RecoLocalTracker/ClusterParameterEstimator/interface/PixelClusterParameterEstimator.h"
 
 #include "TTree.h"
+#include "TH1D.h"
+#include "SimDataFormats/GeneratorProducts/interface/GenEventInfoProduct.h"
 
 #include "MCPProbQ.h"
 
@@ -90,6 +92,10 @@ private:
   const edm::EDGetTokenT<pat::TriggerObjectStandAloneCollection> trigObjToken_;
   const bool saveTrigNames_;
   const bool tpOnly_;
+  const bool requireTrig_;  // keep only JetMET or Tau triggered events
+  const bool requireDeDx_;  // store only tracks with DeDxHitInfo
+  const edm::EDGetTokenT<GenEventInfoProduct> genInfoToken_;
+  TH1D* hCount_ = nullptr;  // bin 1: events seen, bin 2: sum of gen weights, bin 3: kept
 
   // HLT groups, matched as "<name>_v" prefixes
   static const std::vector<std::string> kTrigOR_, kTrigMET_, kTrigJet_, kTrigTau_, kTrigMuon_;
@@ -111,6 +117,7 @@ private:
   int b_passTrigger_OR;
   int b_passMET_, b_passJet_, b_passTau_, b_passMuon_;
   int b_nPV_;
+  float b_genWeight_;
   // muon tag-and-probe
   int b_muMatched_, b_muTight_, b_muIsTag_; float b_muRelIso_, b_muPt_;
   float b_tpMass_, b_tpTagPt_; int b_tpOS_;
@@ -120,6 +127,12 @@ private:
   int b_charge_, b_nPixHit_, b_nTkLayers_, b_highPurity_;
   float b_caloEmEnergy_, b_caloHadEnergy_;  // matched calo-jet EM/HAD energy along the track
   float b_pcCaloFrac_, b_pcHcalFrac_;       // packed-candidate calo fractions
+  float b_dxy_, b_dz_, b_dxyErr_, b_dzErr_;  // impact parameters (IsolatedTrack, w.r.t. the PV)
+  float b_isoCh_, b_isoNh_, b_isoPh_, b_isoPU_;          // pfIsolationDR03 components [GeV]
+  float b_miniIsoCh_, b_miniIsoNh_, b_miniIsoPh_;        // miniPFIsolation components [GeV]
+  int b_fromPV_, b_nValidHits_, b_nValidStripHits_, b_nPixLayers_;
+  int b_lostInner_, b_lostLayers_, b_lostOuter_;          // IsolatedTrack lost-layer categories
+  int b_nMissInner_, b_nMissOuter_, b_nLostHits_;         // hitPattern missing/lost hits
   float b_dedxStripBuiltin_, b_dedxPixelBuiltin_;
   float b_probQpixel_, b_probQpixelNoL1_, b_probXYpixel_;
   std::vector<float> b_pixelDedxHits_, b_stripDedxHits_;
@@ -147,6 +160,7 @@ private:
   unsigned int e_run_, e_lumi_; unsigned long long e_event_;
   float e_pfMET_;
   float e_puppiMET_;
+  float e_pfMETphi_, e_metNoMu_; int e_nTightMu_;  // MET with tight muons added back (MET-leg turn-on)
   std::vector<std::string> e_trigNames_;
   std::vector<int> e_trigPass_;
   int e_passTrigger_OR;
@@ -172,7 +186,10 @@ MCPAnalyzer::MCPAnalyzer(const edm::ParameterSet& iC)
       muonToken_(consumes<std::vector<pat::Muon>>(iC.getParameter<edm::InputTag>("muons"))),
       trigObjToken_(consumes<pat::TriggerObjectStandAloneCollection>(iC.getParameter<edm::InputTag>("triggerObjects"))),
       saveTrigNames_(iC.getParameter<bool>("saveTrigNames")),
-      tpOnly_(iC.getParameter<bool>("tpOnly")) {
+      tpOnly_(iC.getParameter<bool>("tpOnly")),
+      requireTrig_(iC.getParameter<bool>("requireTrig")),
+      requireDeDx_(iC.getParameter<bool>("requireDeDx")),
+      genInfoToken_(consumes<GenEventInfoProduct>(edm::InputTag("generator"))) {
   usesResource("TFileService");
 }
 
@@ -228,6 +245,14 @@ void MCPAnalyzer::beginJob() {
   tT_->Branch("nTrackerLayers", &b_nTkLayers_); tT_->Branch("highPurity", &b_highPurity_);
   tT_->Branch("caloEmEnergy", &b_caloEmEnergy_); tT_->Branch("caloHadEnergy", &b_caloHadEnergy_);
   tT_->Branch("pcCaloFrac", &b_pcCaloFrac_); tT_->Branch("pcHcalFrac", &b_pcHcalFrac_);
+  tT_->Branch("dxy", &b_dxy_); tT_->Branch("dz", &b_dz_); tT_->Branch("dxyError", &b_dxyErr_); tT_->Branch("dzError", &b_dzErr_);
+  tT_->Branch("isoCh", &b_isoCh_); tT_->Branch("isoNh", &b_isoNh_); tT_->Branch("isoPh", &b_isoPh_); tT_->Branch("isoPU", &b_isoPU_);
+  tT_->Branch("miniIsoCh", &b_miniIsoCh_); tT_->Branch("miniIsoNh", &b_miniIsoNh_); tT_->Branch("miniIsoPh", &b_miniIsoPh_);
+  tT_->Branch("fromPV", &b_fromPV_); tT_->Branch("nValidHits", &b_nValidHits_);
+  tT_->Branch("nValidStripHits", &b_nValidStripHits_); tT_->Branch("nPixelLayers", &b_nPixLayers_);
+  tT_->Branch("lostInnerLayers", &b_lostInner_); tT_->Branch("lostLayers", &b_lostLayers_); tT_->Branch("lostOuterLayers", &b_lostOuter_);
+  tT_->Branch("nMissingInnerHits", &b_nMissInner_); tT_->Branch("nMissingOuterHits", &b_nMissOuter_);
+  tT_->Branch("nLostHits", &b_nLostHits_);
   tT_->Branch("dedxStrip_builtin", &b_dedxStripBuiltin_); tT_->Branch("dedxPixel_builtin", &b_dedxPixelBuiltin_);
   tT_->Branch("probQ_pixel", &b_probQpixel_); tT_->Branch("probQ_pixelNoL1", &b_probQpixelNoL1_);
   tT_->Branch("probXY_pixel", &b_probXYpixel_);
@@ -261,21 +286,23 @@ void MCPAnalyzer::beginJob() {
   tT_->Branch("HLT_trigPass_OR", &b_passTrigger_OR)->SetTitle("OR of MET + ditau paths");
   tT_->Branch("passMET", &b_passMET_); tT_->Branch("passJet", &b_passJet_);
   tT_->Branch("passTau", &b_passTau_); tT_->Branch("passMuon", &b_passMuon_);
-  tT_->Branch("nPV", &b_nPV_);
+  tT_->Branch("nPV", &b_nPV_); tT_->Branch("genWeight", &b_genWeight_);
   tT_->Branch("muMatched", &b_muMatched_); tT_->Branch("muTight", &b_muTight_);
   tT_->Branch("muIsTag", &b_muIsTag_); tT_->Branch("muRelIso", &b_muRelIso_); tT_->Branch("muPt", &b_muPt_);
   tT_->Branch("tpMass", &b_tpMass_); tT_->Branch("tpTagPt", &b_tpTagPt_); tT_->Branch("tpOS", &b_tpOS_);
 
 
+  hCount_ = fs->make<TH1D>("counts", "events seen, sum gen weight, kept", 3, 0.5, 3.5);
   tE_ = fs->make<TTree>("events", "per event");
   tE_->Branch("run", &e_run_); tE_->Branch("lumi", &e_lumi_); tE_->Branch("event", &e_event_);
   tE_->Branch("pfMET", &e_pfMET_);
   tE_->Branch("puppiMET", &e_puppiMET_);
+  tE_->Branch("pfMETphi", &e_pfMETphi_); tE_->Branch("metNoMu", &e_metNoMu_); tE_->Branch("nTightMu", &e_nTightMu_);
   if (saveTrigNames_) { tE_->Branch("trigNames", &e_trigNames_); tE_->Branch("trigPass", &e_trigPass_); }
   tE_->Branch("HLT_trigPass_OR", &e_passTrigger_OR)->SetTitle("OR of MET + ditau paths");
   tE_->Branch("passMET", &e_passMET_); tE_->Branch("passJet", &e_passJet_);
   tE_->Branch("passTau", &e_passTau_); tE_->Branch("passMuon", &e_passMuon_);
-  tE_->Branch("nPV", &e_nPV_); tE_->Branch("nTag", &e_nTag_);
+  tE_->Branch("nPV", &e_nPV_); tE_->Branch("nTag", &e_nTag_); tE_->Branch("genWeight", &b_genWeight_);
   
 
   tG_ = fs->make<TTree>("gen", "per gen MCP");
@@ -378,10 +405,28 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
   }
 
 
+  // normalization counters, then the optional trigger skim
+  const auto genH = iEvent.getHandle(genInfoToken_);
+  hCount_->Fill(1);
+  b_genWeight_ = genH.isValid() ? genH->weight() : 1.f;
+  hCount_->Fill(2, b_genWeight_);
+  if (requireTrig_ && !(b_passMET_ || b_passJet_ || b_passTau_)) return;
+  hCount_->Fill(3);
+
   //filling event level tree outside of track loop
   e_run_ = run; e_lumi_ = lumi; e_event_ = event;
   e_pfMET_ = b_pfMET_;
   e_puppiMET_ = b_puppiMET_;
+  e_pfMETphi_ = -9.f; e_metNoMu_ = -1.f; e_nTightMu_ = 0;
+  if (pfMETCollection.isValid() && !pfMETCollection->empty()) {
+    double mx = pfMETCollection->front().px(), my = pfMETCollection->front().py();
+    e_pfMETphi_ = pfMETCollection->front().phi();
+    for (const auto* mu : muons) {
+      if (mu->pt() < 10 || !pv || !mu->isTightMuon(*pv)) continue;
+      mx += mu->px(); my += mu->py(); ++e_nTightMu_;
+    }
+    e_metNoMu_ = std::hypot(mx, my);
+  }
   e_trigNames_ = b_trigNames_;
   e_trigPass_ = b_trigPass_;
   e_passTrigger_OR = b_passTrigger_OR;
@@ -408,6 +453,19 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
       b_nPixHit_ = it.hitPattern().numberOfValidPixelHits();
       b_nTkLayers_ = it.hitPattern().trackerLayersWithMeasurement();
       b_highPurity_ = it.isHighPurityTrack() ? 1 : 0;
+      const auto& hp = it.hitPattern();
+      b_nValidHits_ = hp.numberOfValidHits(); b_nValidStripHits_ = hp.numberOfValidStripHits();
+      b_nPixLayers_ = hp.pixelLayersWithMeasurement();
+      b_nMissInner_ = hp.numberOfLostHits(reco::HitPattern::MISSING_INNER_HITS);
+      b_nMissOuter_ = hp.numberOfLostHits(reco::HitPattern::MISSING_OUTER_HITS);
+      b_nLostHits_ = hp.numberOfLostHits(reco::HitPattern::TRACK_HITS);
+      b_lostInner_ = it.lostInnerLayers(); b_lostLayers_ = it.lostLayers(); b_lostOuter_ = it.lostOuterLayers();
+      b_dxy_ = it.dxy(); b_dz_ = it.dz(); b_dxyErr_ = it.dxyError(); b_dzErr_ = it.dzError();
+      b_fromPV_ = it.fromPV();
+      b_isoCh_ = it.pfIsolationDR03().chargedHadronIso(); b_isoNh_ = it.pfIsolationDR03().neutralHadronIso();
+      b_isoPh_ = it.pfIsolationDR03().photonIso(); b_isoPU_ = it.pfIsolationDR03().puChargedHadronIso();
+      b_miniIsoCh_ = it.miniPFIsolation().chargedHadronIso(); b_miniIsoNh_ = it.miniPFIsolation().neutralHadronIso();
+      b_miniIsoPh_ = it.miniPFIsolation().photonIso();
       b_dedxStripBuiltin_ = it.dEdxStrip();
       b_dedxPixelBuiltin_ = it.dEdxPixel();
       b_caloEmEnergy_ = it.matchedCaloJetEmEnergy();
@@ -458,6 +516,7 @@ void MCPAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
         if (hitRef.isNonnull()) hits = &(*hitRef);
       }
       b_hasDeDx_ = (hits != nullptr) ? 1 : 0;
+      if (requireDeDx_ && !hits) continue;  // data skim; also skipped in gen matching
 
       MCPDeDxResult r = MCPProbQ::compute(hits, it.px(), it.py(), it.pz(), it.charge(),
                                           tkGeom, tTopo, pixelCPE);
@@ -535,6 +594,8 @@ void MCPAnalyzer::fillDescriptions(edm::ConfigurationDescriptions& descriptions)
   desc.add<edm::InputTag>("triggerObjects", edm::InputTag("slimmedPatTrigger"));
   desc.add<bool>("saveTrigNames", true);
   desc.add<bool>("tpOnly", false);
+  desc.add<bool>("requireTrig", false);
+  desc.add<bool>("requireDeDx", false);
   descriptions.add("MCPAnalyzer", desc);
 }
 
